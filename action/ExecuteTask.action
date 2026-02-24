@@ -1,0 +1,12 @@
+# GOAL DEFINITION
+string task_type            # e.g., "PICK_FROM_HANDOVER", "MOVE_TO_POSE"
+string target_arm           # "ABB" (reserved for future dual-arm expansion)
+geometry_msgs/Pose target_pose
+---
+# RESULT DEFINITION
+bool success
+string error_message
+---
+# FEEDBACK DEFINITION
+float32 progress            # 0.0 to 1.0
+string current_status       # e.g., "PLANNING", "MOVING", "GRIPPING"

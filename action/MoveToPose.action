@@ -1,0 +1,9 @@
+# Goal
+geometry_msgs/Pose target_pose
+string strategy
+---
+# Result
+bool success
+---
+# Feedback
+float32 distance_to_goal

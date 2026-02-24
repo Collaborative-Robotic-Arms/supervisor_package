@@ -1,0 +1,5 @@
+string brick_type
+---
+supervisor_package/SuperBrick[] bricks
+geometry_msgs/Pose handover_pose
+bool success
