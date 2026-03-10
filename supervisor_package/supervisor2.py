@@ -41,11 +41,11 @@ class AssemblySupervisor(Node):
         # --- TF2 INITIALIZATION ---
         # Broadcaster: Defines the static relationship between the robot base and camera lens
         self.static_broadcaster = StaticTransformBroadcaster(self)
-        static_transform = TransformStamped()
-        
-        static_transform.header.stamp = self.get_clock().now().to_msg()
-        static_transform.header.frame_id = 'base_link'      # Parent Frame
-        static_transform.child_frame_id = 'camera' # Child Frame
+
+        # static_transform = TransformStamped()
+        # static_transform.header.stamp = self.get_clock().now().to_msg()
+        # static_transform.header.frame_id = 'base_link'      # Parent Frame
+        # static_transform.child_frame_id = 'camera' # Child Frame
 
         # # Measured physical offsets in meters
         # static_transform.transform.translation.x = -0.05
@@ -151,6 +151,15 @@ class AssemblySupervisor(Node):
             # 3. Thesis logic
             target_yaw_deg = r_grasp + (r_place - r_brick)
 
+            target_yaw_deg = round(target_yaw_deg / 90.0) * 90.0
+
+            # Normalize to range [-180, 180] to prevent the robot from spinning 270 degrees 
+            # when it could just rotate -90 degrees.
+            if target_yaw_deg > 180:
+                target_yaw_deg -= 360
+            if target_yaw_deg <= -180:
+                target_yaw_deg += 360
+            
             # 4. Convert back
             target_quat_array = R.from_euler('z', target_yaw_deg, degrees=True).as_quat()
 
@@ -212,8 +221,6 @@ class AssemblySupervisor(Node):
         self.get_logger().info(f"Target Pos: x={target_x:.3f}, y={target_y:.3f}, z={target_z:.3f}")
         
         # Return the position object
-        from geometry_msgs.msg import Point
-        # return Point(x=target_x, y=target_y, z=target_z)
         return Pose().position.__class__(x=target_x, y=target_y, z=target_z)
     
 
