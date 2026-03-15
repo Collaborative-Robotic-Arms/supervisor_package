@@ -52,7 +52,11 @@ install(PROGRAMS
   RENAME abb_controller_node
 )
 
-# Install the mock system
+install(PROGRAMS
+  supervisor_package/hybrid_supervisor_node.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME hybrid_supervisor_node)
+
 install(PROGRAMS
   supervisor_package/mock_system.py
   DESTINATION lib/${PROJECT_NAME}
@@ -64,6 +68,21 @@ install(PROGRAMS
   DESTINATION lib/${PROJECT_NAME}
   RENAME mock_ar4
 )
+
+install(PROGRAMS
+  supervisor_package/mock_detection_node.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME mock_detection_node)
+
+install(PROGRAMS
+  supervisor_package/mock_gui_node.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME mock_gui_node)
+
+install(PROGRAMS
+  supervisor_package/mock_grasping_node.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME mock_grasping_node)
 
 # 4. Export and Package
 ament_export_dependencies(rosidl_default_runtime)
