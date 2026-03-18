@@ -34,6 +34,11 @@ install(PROGRAMS
   supervisor_package/supervisor.py
   DESTINATION lib/${PROJECT_NAME}
   RENAME supervisor)
+
+install(PROGRAMS
+  supervisor_package/supervisor2.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME supervisor_2)
   
 install(PROGRAMS
   supervisor_package/supervisor_node.py

@@ -46,7 +46,7 @@ class MockGUINode(Node):
             # --- PICKUP POSES ---
             if brick.start_side == "AR4":
                 # Keep AR4 where it is (it works perfectly)
-                brick.pickup_pose.position = Point(x=0.75, y=0.10, z=0.1) 
+                brick.pickup_pose.position = Point(x=0.65, y=0.10, z=0.2) 
                 brick.pickup_pose.orientation = Quaternion(x=0.707, y=0.707, z=0.0, w=0.0)
             else:
                 # Move ABB pickup closer to the ABB base (X=0)
@@ -62,7 +62,7 @@ class MockGUINode(Node):
             # Match the placement orientation AND Y-offset to the arm that is holding it
             if brick.start_side == "AR4":
                 # Place slightly to the left
-                brick.place_pose.position = Point(x=0.75, y=0.10, z=0.1 + (i * 0.04))
+                brick.place_pose.position = Point(x=0.65, y=0.10, z=0.2 + (i * 0.04))
                 brick.place_pose.orientation = Quaternion(x=0.707, y=0.707, z=0.0, w=0.0)
             else:
                 # Place slightly to the right

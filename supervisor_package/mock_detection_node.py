@@ -68,7 +68,7 @@ class MockDetectionNode(Node):
             # Match the detection coordinates to the grasp coordinates
             brick.pose = Pose()
             if brick.side == AR4:
-                brick.pose.position = Point(x=0.75, y=0.10, z=0.1)
+                brick.pose.position = Point(x=0.65, y=0.10, z=0.2)
                 brick.pose.orientation = Quaternion(x=0.707, y=0.707, z=0.0, w=0.0)
             else:
                 brick.pose.position = Point(x=0.40, y=-0.10, z=0.1)

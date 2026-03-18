@@ -44,7 +44,7 @@ class MockGraspingNode(Node):
         
         # Split the grasp coordinates based on which arm is picking
         if is_ar4_side:
-            grasp.pose.position = Point(x=0.75, y=0.10, z=0.1)
+            grasp.pose.position = Point(x=0.65, y=0.10, z=0.2)
             grasp.pose.orientation = Quaternion(x=0.707, y=0.707, z=0.0, w=0.0)
         else:
             grasp.pose.position = Point(x=0.40, y=-0.10, z=0.1)
