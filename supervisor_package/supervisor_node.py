@@ -112,6 +112,9 @@ class UnifiedAssemblySupervisor(Node):
         self.plan_check_timer = None
         self.check_for_new_plans = True
         self.last_plan_count = 0
+        self.handover_meeting_height = 0.157
+        self.ar4_z_offset = 0.043
+        self.abb_z_offset = 0.136
 
         mode_str = "SIMULATION (1:1 Pass-through)" if self.use_sim else "HARDWARE (Physical Offsets)"
         self.get_logger().info(f'Unified Assembly Supervisor Initialized in {mode_str} mode')
@@ -429,12 +432,24 @@ class UnifiedAssemblySupervisor(Node):
         return True
 
     async def execute_ar4_worker(self, brick):
-        await self.execute_ar4_full_sequence(brick)
+        success = await self.execute_ar4_full_sequence(brick)
+        
+        # If it failed naturally (not because of an MTC collision interrupt)
+        if not success and not self.ar4_cancelled and not self.emergency_stop:
+            self.get_logger().error(f"❌ AR4 CRITICAL FAILURE on Brick {brick.id}! Halting System.")
+            self.state = "EMERGENCY_STOP"
+            
         self.ar4_busy = False 
 
     async def execute_abb_worker(self, brick):
-        await self.execute_abb_full_sequence(brick)
-        self.abb_busy = False 
+        success = await self.execute_abb_full_sequence(brick)
+        
+        # If it failed naturally (not because of an MTC collision interrupt)
+        if not success and not self.abb_cancelled and not self.emergency_stop:
+            self.get_logger().error(f"❌ ABB CRITICAL FAILURE on Brick {brick.id}! Halting System.")
+            self.state = "EMERGENCY_STOP"
+            
+        self.abb_busy = False
 
     # ========================================================================
     # RECOVERY WORKERS (WITH EXPLICIT HOME COMMAND)
@@ -654,20 +669,19 @@ class UnifiedAssemblySupervisor(Node):
                     self.current_grasp_point = grasp_result.grasp_point
                     if self.is_handover_operation(self.current_brick):
                         self.get_logger().info(f'🔄 HANDOVER detected: {self.current_brick.start_side} → {self.current_brick.target_side}')
-                        self.operation_type = "HANDOVER" # <-- Activates the muting!
+                        self.operation_type = "HANDOVER"
                         
-                        # --- HARDCODE THE INTERMEDIATE WAITING POSE ---
                         self.handover_pose = Pose()
                         self.handover_pose.position.x = 0.56
                         self.handover_pose.position.y = 0.1
-                        self.handover_pose.position.z = 0.2 #change this when trying the actual hardware
+                        self.handover_pose.orientation = Quaternion(x=0.707, y=0.707, z=0.0, w=0.0)
+                        
                         
                         if self.current_brick.start_side == "AR4":
-                            self.handover_pose.orientation = Quaternion(x=0.707, y=0.707, z=0.0, w=0.0)
+                            self.handover_pose.position.z = self.handover_meeting_height + self.ar4_z_offset
                             self.state = "AR4_PICK_FOR_HANDOVER"
                         else:
-                            self.handover_pose.orientation = Quaternion(x=0.707, y=0.707, z=0.0, w=0.0)
-                            self.handover_pose.position.z = 0.3
+                            self.handover_pose.position.z = self.handover_meeting_height + self.abb_z_offset
                             self.state = "ABB_PICK_FOR_HANDOVER"
 
                     elif len(self.assembly_queue) > 0:
@@ -771,10 +785,10 @@ class UnifiedAssemblySupervisor(Node):
                     
                     # FORCE MID-AIR Z-HEIGHT MATCH
                     if self.current_brick.start_side == "AR4":
-                        transformed_receiver_grasp.position.z = 0.3
+                        transformed_receiver_grasp.position.z = self.handover_meeting_height + self.abb_z_offset
 
                     if self.current_brick.start_side == "ABB":
-                        transformed_receiver_grasp.position.z = 0.2
+                        transformed_receiver_grasp.position.z = self.handover_meeting_height + self.ar4_z_offset
                     
                     if receiving_arm == "AR4" and not self.use_sim:
                         transformed_receiver_grasp = self.apply_ar4_hardware_pick_transform(transformed_receiver_grasp)
