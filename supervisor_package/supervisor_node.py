@@ -52,8 +52,8 @@ class UnifiedAssemblySupervisor(Node):
         self.gui_client = self.create_client(GetAssemblyPlan, 'get_assembly_plan', callback_group=self.cb_group)
         self.camera_client = self.create_client(DetectBricks, 'detect_bricks', callback_group=self.cb_group)
         self.grasp_pipeline_client = self.create_client(GetGrasp, 'grasp/get_grasp_point', callback_group=self.cb_group)
-        self.gripper_client = self.create_client(SetBool, 'ar4_gripper/set', callback_group=self.cb_group)
-        self.abb_gripper_client = self.create_client(SetBool, 'abb_gripper/set', callback_group=self.cb_group) 
+        self.gripper_client = self.create_client(SetBool, 'ar4_controller/set_gripper', callback_group=self.cb_group)
+        self.abb_gripper_client = self.create_client(SetBool, 'abb_controller/set_gripper', callback_group=self.cb_group) 
         
         self.mtc_handover_client = self.create_client(ExecuteMTCHandover, 'mtc_controller/execute_handover', callback_group=self.cb_group)
         self.mtc_resolve_client = self.create_client(ResolveCollision, 'mtc_controller/resolve_collision', callback_group=self.cb_group)
@@ -98,6 +98,7 @@ class UnifiedAssemblySupervisor(Node):
         self.abb_current_brick = None
         self.ar4_recovering = False
         self.abb_recovering = False
+        self._is_looping = False
 
         self.emergency_stop = False
         self.zone_sub = self.create_subscription(
@@ -564,11 +565,17 @@ class UnifiedAssemblySupervisor(Node):
     # ========================================================================
 
     async def state_machine_loop(self):
+
+        if getattr(self, '_is_looping', False):
+            return
+        
+        self._is_looping = True
+
         self.timer.cancel()
         try:
             if self.state == "INIT":
                 if not self.gui_client.wait_for_service(timeout_sec=1.0):
-                    self.timer = self.create_timer(2.0, self.state_machine_loop, callback_group=self.cb_group)
+                    await self.ros_sleep(2.0)
                     return
 
                 req = GetAssemblyPlan.Request()
@@ -582,7 +589,7 @@ class UnifiedAssemblySupervisor(Node):
 
             elif self.state == "DETECT":
                 if not self.camera_client.wait_for_service(timeout_sec=1.0):
-                    self.timer = self.create_timer(2.0, self.state_machine_loop, callback_group=self.cb_group)
+                    await self.ros_sleep(2.0)
                     return
 
                 req = DetectBricks.Request()
@@ -596,6 +603,7 @@ class UnifiedAssemblySupervisor(Node):
 
             elif self.state == "PROCESS_NEXT":
                 if not self.assembly_queue and not self.ar4_busy and not self.abb_busy:
+                    self.state = "WAIT_FOR_NEW_PLAN"
                     return
 
                 if not self.ar4_busy:
@@ -910,11 +918,9 @@ class UnifiedAssemblySupervisor(Node):
             self.get_logger().error(f'State machine error: {e}')
 
         finally:
-            # THIS ENSURES HANDOVER AND PARALLEL LOOPS DON'T DIE!
-            if self.state != "DONE" and self.state != "WAIT_FOR_NEW_PLAN":
-                self.timer = self.create_timer(0.1, self.state_machine_loop, callback_group=self.cb_group)
-            elif self.state == "WAIT_FOR_NEW_PLAN":
-                self.timer = self.create_timer(0.1, self.state_machine_loop, callback_group=self.cb_group)
+            self._is_looping = False
+            # ALWAYS keep the heartbeat alive, regardless of state
+            self.timer = self.create_timer(0.1, self.state_machine_loop, callback_group=self.cb_group)
 
 def main(args=None):
     rclpy.init(args=args)
