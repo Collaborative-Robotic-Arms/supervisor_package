@@ -19,7 +19,7 @@ from rclpy.action import ActionClient
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from action_msgs.msg import GoalStatus
-from geometry_msgs.msg import Pose
+from geometry_msgs.msg import Pose, Quaternion
 
 # Custom Interfaces
 from supervisor_package.srv import GetAssemblyPlan
@@ -70,7 +70,9 @@ class UnifiedAssemblySupervisor(Node):
         self.detected_bricks = []
         self.current_grasp_point = None
         self.handover_pose = None
-        
+        self.operation_type = None                
+        self.abb_grasp_point_for_handover = None  
+
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
         
@@ -227,7 +229,6 @@ class UnifiedAssemblySupervisor(Node):
             
             target_quat_array = R.from_euler('z', target_yaw_deg, degrees=True).as_quat()
 
-            from geometry_msgs.msg import Quaternion
             target_quat = Quaternion()
             target_quat.x = 0.0
             target_quat.y = 0.0
@@ -267,6 +268,9 @@ class UnifiedAssemblySupervisor(Node):
         self.abb_parallel_done = False
 
     def zone_status_callback(self, msg):
+        # Ignore proximity alerts during intentional handovers
+        if self.operation_type == "HANDOVER":
+            return
         if "COLLISION_WARNING" in msg.data and not self.emergency_stop and not self.mtc_active and not self.ar4_recovering and not self.abb_recovering:
             self.get_logger().warn(f"⚠️ PROXIMITY ALERT! Interrupting AR4 in [{self.ar4_stage}] and ABB in [{self.abb_stage}]")
             self.mtc_active = True
@@ -321,8 +325,10 @@ class UnifiedAssemblySupervisor(Node):
         result = await result_future
 
         if goal_handle is not None:
-            if client == self.ar4_client and self.ar4_goal_handle == goal_handle: self.ar4_goal_handle = None
-            elif client == self.abb_client and self.abb_goal_handle == goal_handle: self.abb_goal_handle = None
+            if client == self.ar4_client and self.ar4_goal_handle is not None and self.ar4_goal_handle == goal_handle: 
+                self.ar4_goal_handle = None
+            elif client == self.abb_client and self.abb_goal_handle is not None and self.abb_goal_handle == goal_handle: 
+                self.abb_goal_handle = None
 
         if result.status == GoalStatus.STATUS_SUCCEEDED: return result.result
         else: return None
@@ -476,6 +482,18 @@ class UnifiedAssemblySupervisor(Node):
             self.get_logger().info("Returning AR4 to HOME...")
             await self.send_action_goal(self.ar4_client, ExecuteTask.Goal(task_type="HOME"))
             
+        elif stage in ["MOVE_TO_HANDOVER", "HOLDING_AT_HANDOVER"]:
+            self.get_logger().info("AR4 interrupted during Handover. Retracting safely to HOME...")
+            await self.send_action_goal(self.ar4_client, ExecuteTask.Goal(task_type="HOME"))
+            
+            if self.emergency_stop or self.ar4_cancelled:
+                self.ar4_busy = False
+                return
+
+        self.ar4_stage = "DONE"
+        self.ar4_busy = False
+        self.ar4_recovering = False
+        self.get_logger().info('[AR4 RECOVERY] Complete.')
         self.ar4_stage = "DONE"
         self.ar4_busy = False
         self.ar4_recovering = False
@@ -523,7 +541,19 @@ class UnifiedAssemblySupervisor(Node):
             
             self.get_logger().info("Returning ABB to HOME...")
             await self.send_action_goal(self.abb_client, ExecuteTask.Goal(task_type="HOME"))
+
+        elif stage in ["MOVE_TO_HANDOVER", "HOLDING_AT_HANDOVER"]:
+            self.get_logger().info("ABB interrupted during Handover. Retracting safely to HOME...")
+            await self.send_action_goal(self.abb_client, ExecuteTask.Goal(task_type="HOME"))
             
+            if self.emergency_stop or self.abb_cancelled:
+                self.abb_busy = False
+                return
+            
+        self.abb_stage = "DONE"
+        self.abb_busy = False
+        self.abb_recovering = False
+        self.get_logger().info('[ABB RECOVERY] Complete.')
         self.abb_stage = "DONE"
         self.abb_busy = False
         self.abb_recovering = False
@@ -615,11 +645,23 @@ class UnifiedAssemblySupervisor(Node):
                 if grasp_result.success:
                     self.current_grasp_point = grasp_result.grasp_point
                     if self.is_handover_operation(self.current_brick):
+                        self.get_logger().info(f'🔄 HANDOVER detected: {self.current_brick.start_side} → {self.current_brick.target_side}')
+                        self.operation_type = "HANDOVER" # <-- Activates the muting!
+                        
+                        # --- HARDCODE THE INTERMEDIATE WAITING POSE ---
+                        self.handover_pose = Pose()
+                        self.handover_pose.position.x = 0.56
+                        self.handover_pose.position.y = 0.1
+                        self.handover_pose.position.z = 0.2 #change this when trying the actual hardware
+                        
                         if self.current_brick.start_side == "AR4":
+                            self.handover_pose.orientation = Quaternion(x=0.707, y=0.707, z=0.0, w=0.0)
                             self.state = "AR4_PICK_FOR_HANDOVER"
                         else:
+                            self.handover_pose.orientation = Quaternion(x=0.707, y=0.707, z=0.0, w=0.0)
+                            self.handover_pose.position.z = 0.3
                             self.state = "ABB_PICK_FOR_HANDOVER"
-                        
+
                     elif len(self.assembly_queue) > 0:
                         ar4_bricks = [b for b in self.assembly_queue if b.start_side == "AR4"]
                         abb_bricks = [b for b in self.assembly_queue if b.start_side == "ABB"]
@@ -680,7 +722,7 @@ class UnifiedAssemblySupervisor(Node):
                 is_ar4 = (self.state == "AR4_PICK_FOR_HANDOVER")
                 client = self.ar4_client if is_ar4 else self.abb_client
                 
-                grasp_pose = self.transform_pose_to_abb(self.current_grasp_point.pose)
+                grasp_pose = self.current_brick.pickup_pose
                 
                 if is_ar4:
                     self.ar4_stage = "PICK"
@@ -718,6 +760,13 @@ class UnifiedAssemblySupervisor(Node):
                 if grasp_result.success:
                     grasp_for_receiver = grasp_result.grasp_point
                     transformed_receiver_grasp = self.transform_pose_to_abb(grasp_for_receiver.pose)
+                    
+                    # FORCE MID-AIR Z-HEIGHT MATCH
+                    if self.current_brick.start_side == "AR4":
+                        transformed_receiver_grasp.position.z = 0.3
+
+                    if self.current_brick.start_side == "ABB":
+                        transformed_receiver_grasp.position.z = 0.2
                     
                     if receiving_arm == "AR4" and not self.use_sim:
                         transformed_receiver_grasp = self.apply_ar4_hardware_pick_transform(transformed_receiver_grasp)
@@ -782,7 +831,7 @@ class UnifiedAssemblySupervisor(Node):
                     else:
                         place_pose = self.apply_abb_hardware_place_transform(place_pose)
                 else:
-                    place_pose.position.z = 0.22 if is_ar4_placing else 0.24
+                    place_pose.position.z = 0.12 if is_ar4_placing else 0.24
 
                 place_goal = ExecuteTask.Goal(task_type="PLACE", target_pose=place_pose)
                 result = await self.send_action_goal(placer_client, place_goal)
@@ -792,89 +841,9 @@ class UnifiedAssemblySupervisor(Node):
                 
                 if is_ar4_placing: self.ar4_stage = "DONE"
                 else: self.abb_stage = "DONE"
-                self.state = "PROCESS_NEXT"
-
-            # ------------------------------------------------------------------------
-            # SEQUENTIAL FALLBACK STATES (Direct execution without parallel sync)
-            # ------------------------------------------------------------------------
-            elif self.state == "EXECUTE_AR4_DIRECT":
-                self.ar4_stage = "PICK"
-                grasp_pose = self.transform_pose_to_abb(self.current_grasp_point.pose)
                 
-                if not self.use_sim: grasp_pose = self.apply_ar4_hardware_pick_transform(grasp_pose)
-
-                pick_goal = ExecuteTask.Goal(task_type="PICK", target_pose=grasp_pose)
-                result = await self.send_action_goal(self.ar4_client, pick_goal)
-                if not result or not result.success:
-                    self.state = "RECOVERY"
-                    return
-                self.state = "AR4_PLACE_ON_GRID"
-
-            elif self.state == "AR4_PLACE_ON_GRID":
-                self.ar4_stage = "PLACE"
-                place_pose = copy.deepcopy(self.current_brick.place_pose)
-                
-                if not self.use_sim:
-                    grasp_pose = self.transform_pose_to_abb(self.current_grasp_point.pose)
-                    place_pose.position = self.transform_position(place_pose, self.current_brick.pickup_pose, grasp_pose)
-                    orientation = self.transform_quaternion(place_pose, self.current_brick.pickup_pose, grasp_pose)
-                    if orientation:
-                        place_pose.orientation.x = orientation.z
-                        place_pose.orientation.y = orientation.w
-                        place_pose.orientation.z = 0.0
-                        place_pose.orientation.w = 0.0
-                        
-                    place_pose = self.apply_ar4_hardware_place_transform(place_pose)
-                else:
-                    place_pose.position.z = 0.22
-
-                place_goal = ExecuteTask.Goal(task_type="PLACE", target_pose=place_pose)
-                result = await self.send_action_goal(self.ar4_client, place_goal)
-                if not result or not result.success:
-                    self.state = "RECOVERY"
-                    return
-                
-                self.ar4_stage = "DONE"
-                self.state = "PROCESS_NEXT"
-
-            elif self.state == "EXECUTE_ABB_PICK":
-                self.abb_stage = "PICK"
-                grasp_pose = self.transform_pose_to_abb(self.current_grasp_point.pose) if self.current_grasp_point else copy.deepcopy(self.current_brick.pickup_pose)
-                
-                if not self.use_sim: grasp_pose = self.apply_abb_hardware_pick_transform(grasp_pose)
-
-                pick_goal = ExecuteTask.Goal(task_type="PICK", target_pose=grasp_pose)
-                result = await self.send_action_goal(self.abb_client, pick_goal)
-                if not result or not result.success:
-                    self.state = "RECOVERY"
-                    return
-                self.state = "EXECUTE_ABB_PLACE"
-
-            elif self.state == "EXECUTE_ABB_PLACE":
-                self.abb_stage = "PLACE"
-                place_pose = copy.deepcopy(self.current_brick.place_pose)
-                grasp_pose = self.transform_pose_to_abb(self.current_grasp_point.pose) if self.current_grasp_point else copy.deepcopy(self.current_brick.pickup_pose)
-                
-                if not self.use_sim:
-                    place_pose.position = self.transform_position(place_pose, self.current_brick.pickup_pose, grasp_pose)
-                    orientation = self.transform_quaternion(place_pose, self.current_brick.pickup_pose, grasp_pose)
-                    if orientation:
-                        place_pose.orientation.x = orientation.z
-                        place_pose.orientation.y = orientation.w
-                        place_pose.orientation.z = 0.0
-                        place_pose.orientation.w = 0.0
-                        
-                    place_pose = self.apply_abb_hardware_place_transform(place_pose)
-                else:
-                    place_pose.position.z = 0.24
-
-                place_goal = ExecuteTask.Goal(task_type="PLACE", target_pose=place_pose)
-                result = await self.send_action_goal(self.abb_client, place_goal)
-                if not result or not result.success:
-                    self.state = "RECOVERY"
-                    return
-                
-                self.abb_stage = "DONE"
+                # --- NEW: CLEAR OPERATION TYPE ---
+                self.operation_type = "SEQUENTIAL"
                 self.state = "PROCESS_NEXT"
 
             # ------------------------------------------------------------------------
