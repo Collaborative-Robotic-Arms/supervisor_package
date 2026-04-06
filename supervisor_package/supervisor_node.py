@@ -19,7 +19,8 @@ from rclpy.action import ActionClient
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from action_msgs.msg import GoalStatus
-from geometry_msgs.msg import Pose, Quaternion
+from geometry_msgs.msg import Pose, Quaternion, PoseStamped
+import tf2_geometry_msgs
 
 # Custom Interfaces
 from supervisor_package.srv import GetAssemblyPlan
@@ -30,7 +31,7 @@ from std_srvs.srv import SetBool
 from std_msgs.msg import String
 
 import math
-import copy  # <-- CRITICAL FIX: Protects queue data from mutation
+import copy 
 from tf2_ros import TransformException, Buffer, TransformListener
 from scipy.spatial.transform import Rotation as R
 
@@ -128,7 +129,16 @@ class UnifiedAssemblySupervisor(Node):
 
     def transform_pose_to_abb(self, input_pose: Pose):
         if self.use_sim:
-            return input_pose
+            transformed_pose = Pose()
+            
+            # 1. Translation: Hardcode physical offsets from your URDF (X: 0.67, Y: 0.01).
+            # We swap input X and Y to manually account for the camera's 90-degree rotation.
+            transformed_pose.position.x = input_pose.position.y + 0.67
+            transformed_pose.position.y = input_pose.position.x + 0.01
+            transformed_pose.position.z = input_pose.position.z 
+            transformed_pose.orientation = input_pose.orientation
+            
+            return transformed_pose
             
         try:
             transformed_pose = Pose()
@@ -145,17 +155,16 @@ class UnifiedAssemblySupervisor(Node):
     def apply_ar4_hardware_pick_transform(self, pose: Pose):
         current_x = -pose.orientation.z
         current_y = -pose.orientation.w
-        factor = 0.70710678
-        pose.orientation.x = factor * (current_x - current_y)
-        pose.orientation.y = factor * (current_x + current_y)
+        pose.orientation.x = current_x 
+        pose.orientation.y = current_y
         pose.orientation.z = 0.0
         pose.orientation.w = 0.0
         pose.position.z = 0.11
         return pose
 
     def apply_ar4_hardware_place_transform(self, pose: Pose):
-        pose.orientation.x = -pose.orientation.z
-        pose.orientation.y = -pose.orientation.w
+        pose.orientation.x = pose.orientation.z
+        pose.orientation.y = pose.orientation.w
         pose.orientation.z = 0.0
         pose.orientation.w = 0.0
         pose.position.z = 0.12
@@ -380,8 +389,17 @@ class UnifiedAssemblySupervisor(Node):
             grasp_pose = self.apply_ar4_hardware_pick_transform(grasp_pose)
             place_pose = self.apply_ar4_hardware_place_transform(place_pose)
         else:
-            grasp_pose.position.z = 0.22 
-            place_pose.position.z = 0.26
+            place_pose.position = self.transform_position(place_pose, brick.pickup_pose, grasp_pose)
+            target_place_orientation = self.transform_quaternion(place_pose, brick.pickup_pose, grasp_pose)
+            grasp_pose.position.z = 0.11 
+            place_pose.position.z = 0.12
+
+            grasp_pose.orientation.x = -grasp_pose.orientation.z
+            grasp_pose.orientation.y = -grasp_pose.orientation.w
+            grasp_pose.orientation.z = 0.0
+            grasp_pose.orientation.w = 0.0
+
+            place_pose.orientation = copy.deepcopy(grasp_pose.orientation)
 
         self.ar4_stage = "PICK"
         pick_goal = ExecuteTask.Goal(task_type="PICK", target_pose=grasp_pose)
@@ -400,7 +418,17 @@ class UnifiedAssemblySupervisor(Node):
         self.get_logger().info(f'[PARALLEL] ABB starting sequence for brick {brick.id}')
         if self.emergency_stop or self.abb_cancelled: return False
 
-        grasp_pose = self.transform_pose_to_abb(self.current_grasp_point.pose) if self.current_grasp_point else copy.deepcopy(brick.pickup_pose)
+        req = GetGrasp.Request()
+        req.brick_index = str(brick.id)
+        res = await self.grasp_pipeline_client.call_async(req)
+        
+        # If the model fails or returns no grasp, stop the sequence safely
+        if not res.success or self.emergency_stop or self.abb_cancelled: 
+            self.get_logger().error(f"ABB Grasp Pipeline failed to find a point for brick {brick.id}")
+            return False
+
+        # Successfully got the point from advanced_grasping_node!
+        grasp_pose = self.transform_pose_to_abb(res.grasp_point.pose)        
         place_pose = copy.deepcopy(brick.place_pose)
 
         if not self.use_sim:
@@ -416,7 +444,16 @@ class UnifiedAssemblySupervisor(Node):
             grasp_pose = self.apply_abb_hardware_pick_transform(grasp_pose)
             place_pose = self.apply_abb_hardware_place_transform(place_pose)
         else:
-            place_pose.position.z = 0.24
+            place_pose.position = self.transform_position(place_pose, brick.pickup_pose, grasp_pose)
+            grasp_pose.position.z = 0.21
+            place_pose.position.z = 0.22
+
+            grasp_pose.orientation.x = -grasp_pose.orientation.z
+            grasp_pose.orientation.y = -grasp_pose.orientation.w
+            grasp_pose.orientation.z = 0.0
+            grasp_pose.orientation.w = 0.0
+
+            place_pose.orientation = copy.deepcopy(grasp_pose.orientation)
 
         self.abb_stage = "PICK"
         pick_goal = ExecuteTask.Goal(task_type="PICK", target_pose=grasp_pose)
@@ -482,7 +519,11 @@ class UnifiedAssemblySupervisor(Node):
                     place_pose.orientation.w = 0.0
                 place_pose = self.apply_ar4_hardware_place_transform(place_pose)
             else:
-                place_pose.position.z = 0.22 
+                place_pose.position.z = 0.12
+                place_pose.orientation.x = 0.0
+                place_pose.orientation.y = 1.0
+                place_pose.orientation.z = 0.0
+                place_pose.orientation.w = 0.0
 
             plc_goal = ExecuteTask.Goal(task_type="PLACE", target_pose=place_pose)
             await self.send_action_goal(self.ar4_client, plc_goal)
@@ -542,7 +583,11 @@ class UnifiedAssemblySupervisor(Node):
                     place_pose.orientation.w = 0.0
                 place_pose = self.apply_abb_hardware_place_transform(place_pose)
             else:
-                place_pose.position.z = 0.24 
+                place_pose.position.z = 0.22
+                place_pose.orientation.x = 0.0
+                place_pose.orientation.y = 1.0
+                place_pose.orientation.z = 0.0
+                place_pose.orientation.w = 0.0 
 
             plc_goal = ExecuteTask.Goal(task_type="PLACE", target_pose=place_pose)
             await self.send_action_goal(self.abb_client, plc_goal)
@@ -853,8 +898,13 @@ class UnifiedAssemblySupervisor(Node):
                     else:
                         place_pose = self.apply_abb_hardware_place_transform(place_pose)
                 else:
-                    place_pose.position.z = 0.12 if is_ar4_placing else 0.24
+                    place_pose.position.z = 0.12 if is_ar4_placing else 0.22
 
+                place_pose.orientation.x = 0.0
+                place_pose.orientation.y = 1.0
+                place_pose.orientation.z = 0.0
+                place_pose.orientation.w = 0.0
+                
                 place_goal = ExecuteTask.Goal(task_type="PLACE", target_pose=place_pose)
                 result = await self.send_action_goal(placer_client, place_goal)
                 if not result or not result.success:

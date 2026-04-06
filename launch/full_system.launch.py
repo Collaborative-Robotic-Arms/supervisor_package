@@ -21,7 +21,7 @@ def launch_setup(context, *args, **kwargs):
     # 1. Read Launch Arguments
     # ---------------------------------------------------------
     mode = LaunchConfiguration('mode').perform(context)
-    test_scenario = int(LaunchConfiguration('test_scenario').perform(context))
+    # test_scenario = int(LaunchConfiguration('test_scenario').perform(context))
     
     is_sim = (mode == 'sim')
     
@@ -77,30 +77,30 @@ def launch_setup(context, *args, **kwargs):
     # ---------------------------------------------------------
     # 4. SIMULATION-ONLY NODES (The Mock Pipeline)
     # ---------------------------------------------------------
-    if is_sim:
-        nodes_to_start.append(Node(
-            package='supervisor_package',
-            executable='mock_gui_node',
-            name='mock_gui_node',
-            output='screen',
-            parameters=[{'test_scenario': test_scenario, 'use_sim_time': is_sim}]
-        ))
+    # if is_sim:
+    #     nodes_to_start.append(Node(
+    #         package='supervisor_package',
+    #         executable='mock_gui_node',
+    #         name='mock_gui_node',
+    #         output='screen',
+    #         parameters=[{'test_scenario': test_scenario, 'use_sim_time': is_sim}]
+    #     ))
         
-        nodes_to_start.append(Node(
-            package='supervisor_package',
-            executable='mock_detection_node',
-            name='mock_detection_node',
-            output='screen',
-            parameters=[{'test_scenario': test_scenario, 'use_sim_time': is_sim}]
-        ))
+    #     nodes_to_start.append(Node(
+    #         package='supervisor_package',
+    #         executable='mock_detection_node',
+    #         name='mock_detection_node',
+    #         output='screen',
+    #         parameters=[{'test_scenario': test_scenario, 'use_sim_time': is_sim}]
+    #     ))
         
-        nodes_to_start.append(Node(
-            package='supervisor_package',
-            executable='mock_grasping_node',
-            name='mock_grasping_node',
-            output='screen',
-            parameters=[{'test_scenario': test_scenario, 'use_sim_time': is_sim}]
-        ))
+    #     nodes_to_start.append(Node(
+    #         package='supervisor_package',
+    #         executable='mock_grasping_node',
+    #         name='mock_grasping_node',
+    #         output='screen',
+    #         parameters=[{'test_scenario': test_scenario, 'use_sim_time': is_sim}]
+    #     ))
 
     return nodes_to_start
 
@@ -112,10 +112,10 @@ def generate_launch_description():
             choices=['sim', 'real'],
             description='Launch mode: sim (launches mocks) or real (hardware gripper only)'
         ),
-        DeclareLaunchArgument(
-            'test_scenario',
-            default_value='1',
-            description='Test scenario (1=parallel safe, 2=parallel collision, 3=AR4->ABB, 4=ABB->AR4)'
-        ),
+        # DeclareLaunchArgument(
+        #     'test_scenario',
+        #     default_value='1',
+        #     description='Test scenario (1=parallel safe, 2=parallel collision, 3=AR4->ABB, 4=ABB->AR4)'
+        # ),
         OpaqueFunction(function=launch_setup)
     ])
