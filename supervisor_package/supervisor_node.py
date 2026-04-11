@@ -68,6 +68,7 @@ class UnifiedAssemblySupervisor(Node):
         self.state = "INIT"
         self.current_brick = None
         self.assembly_queue = []
+        self.known_brick_ids = set()
         self.detected_bricks = []
         self.current_grasp_point = None
         self.handover_pose = None
@@ -467,17 +468,20 @@ class UnifiedAssemblySupervisor(Node):
             if not self.gui_client.wait_for_service(timeout_sec=0.5): return
             req = GetAssemblyPlan.Request()
             result = await self.gui_client.call_async(req)
+            
             if result is not None and len(result.plan) > 0:
-                new_plan_count = len(result.plan)
-                if new_plan_count != self.last_plan_count:
-                    self.last_plan_count = new_plan_count
-                    existing_ids = {brick.id for brick in self.assembly_queue}
-                    new_bricks = [b for b in result.plan if b.id not in existing_ids]
-                    
-                    if new_bricks:
-                        self.assembly_queue.extend(new_bricks)
-                        if self.state == "WAIT_FOR_NEW_PLAN" or self.state == "DONE":
-                            self.state = "DETECT"
+                # --- REMOVED THE FLAWED LENGTH CHECK ---
+                
+                # Check permanent memory for new, unseen bricks
+                new_bricks = [b for b in result.plan if b.id not in self.known_brick_ids]
+                
+                if new_bricks:
+                    for b in new_bricks:
+                        self.known_brick_ids.add(b.id) # Mark as seen!
+                        
+                    self.assembly_queue.extend(new_bricks)
+                    if self.state == "WAIT_FOR_NEW_PLAN" or self.state == "DONE":
+                        self.state = "DETECT"
         except Exception:
             pass
 
@@ -937,6 +941,7 @@ class UnifiedAssemblySupervisor(Node):
                 result = await self.gui_client.call_async(req)
                 if result is not None and len(result.plan) > 0:
                     self.assembly_queue = result.plan
+                    self.known_brick_ids = {b.id for b in result.plan}
                     self.state = "DETECT"
                 else:
                     self.timer = self.create_timer(2.0, self.state_machine_loop, callback_group=self.cb_group)
