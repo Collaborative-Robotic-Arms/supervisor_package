@@ -121,7 +121,8 @@ class UnifiedAssemblySupervisor(Node):
         mode_str = "SIMULATION (1:1 Pass-through)" if self.use_sim else "HARDWARE (Physical Offsets)"
         self.get_logger().info(f'Unified Assembly Supervisor Initialized in {mode_str} mode')
         
-        self.timer = self.create_timer(1.0, self.state_machine_loop, callback_group=self.cb_group)
+        # self.timer = self.create_timer(1.0, self.state_machine_loop, callback_group=self.cb_group)
+        self.timer = self.create_timer(0.1, self.state_machine_loop, callback_group=self.cb_group)
         self.plan_check_timer = self.create_timer(5.0, self.poll_for_new_plans, callback_group=self.cb_group)
 
     # ========================================================================
@@ -576,7 +577,6 @@ class UnifiedAssemblySupervisor(Node):
 
         # 2. Add 90 degrees to account for the swapped X/Y axes in transform_pose_to_abb
         corrected_yaw_deg = raw_yaw_deg + 90.0
-
         # 3. Explicitly construct the hardware-safe quaternion (Roll=0, Pitch=180 points Z down, Yaw=Corrected)
         res.grasp_point.pose.orientation = self._rpy_to_quat_normalized(0.0, 180.0, corrected_yaw_deg)
         # Log initial grasp pose angle from grasping node
@@ -681,7 +681,7 @@ class UnifiedAssemblySupervisor(Node):
         raw_yaw_deg = self._extract_yaw_safe(res.grasp_point.pose.orientation) # use brick.pose.orientation in DETECT
 
         # 2. Add 90 degrees to account for the swapped X/Y axes in transform_pose_to_abb
-        corrected_yaw_deg = raw_yaw_deg + 90.0
+        corrected_yaw_deg = raw_yaw_deg 
 
         # 3. Explicitly construct the hardware-safe quaternion (Roll=0, Pitch=180 points Z down, Yaw=Corrected)
         res.grasp_point.pose.orientation = self._rpy_to_quat_normalized(0.0, 180.0, corrected_yaw_deg)
@@ -930,7 +930,7 @@ class UnifiedAssemblySupervisor(Node):
         
         self._is_looping = True
 
-        self.timer.cancel()
+        # self.timer.cancel()
         try:
             if self.state == "INIT":
                 if not self.gui_client.wait_for_service(timeout_sec=1.0):
@@ -944,7 +944,8 @@ class UnifiedAssemblySupervisor(Node):
                     self.known_brick_ids = {b.id for b in result.plan}
                     self.state = "DETECT"
                 else:
-                    self.timer = self.create_timer(2.0, self.state_machine_loop, callback_group=self.cb_group)
+                    await self.ros_sleep(2.0)
+                    # self.timer = self.create_timer(2.0, self.state_machine_loop, callback_group=self.cb_group)
                     return
 
             elif self.state == "DETECT":
@@ -1305,7 +1306,7 @@ class UnifiedAssemblySupervisor(Node):
         finally:
             self._is_looping = False
             # ALWAYS keep the heartbeat alive, regardless of state
-            self.timer = self.create_timer(0.1, self.state_machine_loop, callback_group=self.cb_group)
+            # self.timer = self.create_timer(0.1, self.state_machine_loop, callback_group=self.cb_group)
 
 def main(args=None):
     rclpy.init(args=args)
