@@ -169,7 +169,25 @@ class UnifiedAssemblySupervisor(Node):
         except Exception as e:
             self.get_logger().warn(f"Error extracting yaw: {e}")
             return 0.0
-
+        
+    def _normalize_symmetric_gripper_yaw(self, yaw_deg):
+        """
+        Forces the yaw angle to stay within [-90, 90) degrees.
+        Because parallel jaw grippers are symmetric, a grasp at 150 deg 
+        is physically identical to a grasp at -30 deg.
+        This prevents the arm's wrist joint from doing unnecessary 180-degree flips.
+        """
+        # First normalize to standard [-180, 180)
+        yaw_deg = (yaw_deg + 180) % 360 - 180
+        
+        # Fold the angle into the [-90, 90) hemisphere
+        if yaw_deg >= 90:
+            yaw_deg -= 180
+        elif yaw_deg < -90:
+            yaw_deg += 180
+            
+        return yaw_deg
+    
     def _rpy_to_quat_normalized(self, roll_deg, pitch_deg, yaw_deg):
         """
         Convert Roll-Pitch-Yaw to quaternion using scipy with proper normalization.
@@ -406,8 +424,7 @@ class UnifiedAssemblySupervisor(Node):
             target_yaw_deg = round(target_yaw_deg / 90.0) * 90.0
 
             # 4. Normalize the angle between -180 and 180
-            if target_yaw_deg > 180: target_yaw_deg -= 360
-            if target_yaw_deg <= -180: target_yaw_deg += 360
+            target_yaw_deg = self._normalize_symmetric_gripper_yaw(target_yaw_deg)
             
             # 5. Build the final quaternion using the EXACT SAME method as the pick pose
             target_quat = self._rpy_to_quat_normalized(0.0, 180.0, target_yaw_deg)
@@ -576,6 +593,7 @@ class UnifiedAssemblySupervisor(Node):
 
         # 2. Add 90 degrees to account for the swapped X/Y axes in transform_pose_to_abb
         corrected_yaw_deg = raw_yaw_deg + 90.0
+        corrected_yaw_deg = self._normalize_symmetric_gripper_yaw(corrected_yaw_deg)
 
         # 3. Explicitly construct the hardware-safe quaternion (Roll=0, Pitch=180 points Z down, Yaw=Corrected)
         res.grasp_point.pose.orientation = self._rpy_to_quat_normalized(0.0, 180.0, corrected_yaw_deg)
@@ -607,7 +625,7 @@ class UnifiedAssemblySupervisor(Node):
         else:
             place_pose.position = self.transform_position(place_pose, brick.pickup_pose, grasp_pose)
             target_place_orientation = self.transform_quaternion(place_pose, brick.pickup_pose, grasp_pose)
-            grasp_pose.position.z = 0.11 
+            grasp_pose.position.z = 0.115 
             place_pose.position.z = 0.12
 
             # Use the grasp orientation directly from the grasping module (no overrides)
@@ -680,8 +698,8 @@ class UnifiedAssemblySupervisor(Node):
                 # 1. Extract the raw 2D yaw from the camera's original grasp point
         raw_yaw_deg = self._extract_yaw_safe(res.grasp_point.pose.orientation) # use brick.pose.orientation in DETECT
 
-        # 2. Add 90 degrees to account for the swapped X/Y axes in transform_pose_to_abb
-        corrected_yaw_deg = raw_yaw_deg + 90.0
+        # 2. prevents unnecessary 180-degree flips by normalizing the angle to the [-90, 90) range
+        corrected_yaw_deg = self._normalize_symmetric_gripper_yaw(raw_yaw_deg)
 
         # 3. Explicitly construct the hardware-safe quaternion (Roll=0, Pitch=180 points Z down, Yaw=Corrected)
         res.grasp_point.pose.orientation = self._rpy_to_quat_normalized(0.0, 180.0, corrected_yaw_deg)
@@ -712,6 +730,7 @@ class UnifiedAssemblySupervisor(Node):
             grasp_pose = self.apply_abb_hardware_pick_transform(grasp_pose)
             place_pose = self.apply_abb_hardware_place_transform(place_pose)
         else:
+            grasp_pose.position.x -= 0.004
             place_pose.position = self.transform_position(place_pose, brick.pickup_pose, grasp_pose)
             target_place_orientation = self.transform_quaternion(place_pose, brick.pickup_pose, grasp_pose)
             grasp_pose.position.z = 0.21
@@ -805,8 +824,11 @@ class UnifiedAssemblySupervisor(Node):
         
             self.get_logger().info("Executing AR4 PLACE...")
             place_pose = copy.deepcopy(brick.place_pose)
+            if not self.current_grasp_point:
+                self.get_logger().error("Lost AI grasp point during recovery! Halting to prevent bad placement.")
+                return
+            grasp_pose = self.transform_pose_to_abb(self.current_grasp_point.pose)
             if not self.use_sim:
-                grasp_pose = self.transform_pose_to_abb(self.current_grasp_point.pose) if self.current_grasp_point else brick.pickup_pose
                 place_pose.position = self.transform_position(place_pose, brick.pickup_pose, grasp_pose)
                 orientation = self.transform_quaternion(place_pose, brick.pickup_pose, grasp_pose)
                 if orientation:
@@ -1075,6 +1097,9 @@ class UnifiedAssemblySupervisor(Node):
                     ar4_brick = brick1 if brick1.start_side == "AR4" else brick2
                     abb_brick = brick1 if brick1.start_side == "ABB" else brick2
                     
+                    self.ar4_current_brick = ar4_brick
+                    self.abb_current_brick = abb_brick
+
                     self.ar4_parallel_done = False
                     self.abb_parallel_done = False
                     self.ar4_busy = True
@@ -1110,7 +1135,7 @@ class UnifiedAssemblySupervisor(Node):
                 is_ar4 = (self.state == "AR4_PICK_FOR_HANDOVER")
                 client = self.ar4_client if is_ar4 else self.abb_client
                 
-                grasp_pose = self.current_brick.pickup_pose
+                grasp_pose = self.transform_pose_to_abb(self.current_grasp_point.pose)
                 
                 if is_ar4:
                     self.ar4_stage = "PICK"
@@ -1294,7 +1319,7 @@ class UnifiedAssemblySupervisor(Node):
                 await self.ros_sleep(3.0)
 
             elif self.state == "WAIT_FOR_NEW_PLAN":
-                await self.ros_sleep(2.0) 
+                await self.ros_sleep(0.5) 
                 if self.assembly_queue and not self.ar4_busy and not self.abb_busy:
                     self.state = "DETECT"
                     return
@@ -1305,7 +1330,7 @@ class UnifiedAssemblySupervisor(Node):
         finally:
             self._is_looping = False
             # ALWAYS keep the heartbeat alive, regardless of state
-            self.timer = self.create_timer(0.1, self.state_machine_loop, callback_group=self.cb_group)
+            self.timer = self.create_timer(0.01, self.state_machine_loop, callback_group=self.cb_group)
 
 def main(args=None):
     rclpy.init(args=args)
