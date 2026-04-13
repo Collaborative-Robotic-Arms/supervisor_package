@@ -590,6 +590,12 @@ class UnifiedAssemblySupervisor(Node):
             return False
         # 1. Extract the raw 2D yaw from the camera's original grasp point
         raw_yaw_deg = self._extract_yaw_safe(res.grasp_point.pose.orientation) # use brick.pose.orientation in DETECT
+        
+        if "Z" in brick.type.upper():
+            yolo_brick = next((b for b in self.detected_bricks if str(b.id) == str(brick.id)), None)
+            if yolo_brick:
+                # YOLO brick has +90 from DETECT. We subtract 90 to get the raw angle
+                raw_yaw_deg = self._extract_yaw_safe(yolo_brick.pose.orientation) - 90.0
 
         # 2. Add 90 degrees to account for the swapped X/Y axes in transform_pose_to_abb
         corrected_yaw_deg = raw_yaw_deg + 90.0
@@ -625,7 +631,7 @@ class UnifiedAssemblySupervisor(Node):
         else:
             place_pose.position = self.transform_position(place_pose, brick.pickup_pose, grasp_pose)
             target_place_orientation = self.transform_quaternion(place_pose, brick.pickup_pose, grasp_pose)
-            grasp_pose.position.z = 0.115 
+            grasp_pose.position.z = 0.105 
             place_pose.position.z = 0.12
 
             # Use the grasp orientation directly from the grasping module (no overrides)
@@ -697,6 +703,12 @@ class UnifiedAssemblySupervisor(Node):
 
                 # 1. Extract the raw 2D yaw from the camera's original grasp point
         raw_yaw_deg = self._extract_yaw_safe(res.grasp_point.pose.orientation) # use brick.pose.orientation in DETECT
+       
+        if "Z" in brick.type.upper():
+            yolo_brick = next((b for b in self.detected_bricks if str(b.id) == str(brick.id)), None)
+            if yolo_brick:
+                # YOLO brick has +90 from DETECT. We subtract 90 to get the raw angle
+                raw_yaw_deg = self._extract_yaw_safe(yolo_brick.pose.orientation) - 90.0
 
         # 2. prevents unnecessary 180-degree flips by normalizing the angle to the [-90, 90) range
         corrected_yaw_deg = self._normalize_symmetric_gripper_yaw(raw_yaw_deg)
@@ -1046,6 +1058,11 @@ class UnifiedAssemblySupervisor(Node):
                     # 1. Extract raw 2D yaw from the grasping node
                     raw_yaw_deg = self._extract_yaw_safe(grasp_result.grasp_point.pose.orientation)
                     
+                    if "Z" in self.current_brick.type.upper():
+                        yolo_brick = next((b for b in self.detected_bricks if str(b.id) == str(self.current_brick.id)), None)
+                        if yolo_brick:
+                            raw_yaw_deg = self._extract_yaw_safe(yolo_brick.pose.orientation) - 90.0
+                            
                     # 2. Add 90 degrees
                     corrected_yaw_deg = raw_yaw_deg + 90.0
                     
@@ -1139,11 +1156,17 @@ class UnifiedAssemblySupervisor(Node):
                 
                 if is_ar4:
                     self.ar4_stage = "PICK"
-                    if not self.use_sim: grasp_pose = self.apply_ar4_hardware_pick_transform(grasp_pose)
+                    if not self.use_sim: 
+                        grasp_pose = self.apply_ar4_hardware_pick_transform(grasp_pose)
+                    else:
+                        grasp_pose.position.z = 0.105               
                 else:
                     self.abb_stage = "PICK"
-                    if not self.use_sim: grasp_pose = self.apply_abb_hardware_pick_transform(grasp_pose)
-                
+                    if not self.use_sim: 
+                        grasp_pose = self.apply_abb_hardware_pick_transform(grasp_pose)
+                    else:
+                        grasp_pose.position.z = 0.21
+
                 pick_goal = ExecuteTask.Goal(task_type="PICK", target_pose=grasp_pose)
                 result = await self.send_action_goal(client, pick_goal)
                 if not result or not result.success:
