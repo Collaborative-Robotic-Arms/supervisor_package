@@ -114,7 +114,7 @@ class UnifiedAssemblySupervisor(Node):
         self.plan_check_timer = None
         self.check_for_new_plans = True
         self.last_plan_count = 0
-        self.handover_meeting_height = 0.157
+        self.handover_meeting_height = 0.127
         self.ar4_z_offset = 0.043
         self.abb_z_offset = 0.136
 
@@ -330,8 +330,8 @@ class UnifiedAssemblySupervisor(Node):
             
         try:
             transformed_pose = Pose()
-            transformed_pose.position.x = input_pose.position.y + 0.674
-            transformed_pose.position.y = input_pose.position.x + 0.033
+            transformed_pose.position.x = input_pose.position.y + 0.68
+            transformed_pose.position.y = input_pose.position.x + 0.043
             transformed_pose.position.z = input_pose.position.z
             transformed_pose.orientation = input_pose.orientation
             return transformed_pose
@@ -339,28 +339,69 @@ class UnifiedAssemblySupervisor(Node):
             self.get_logger().error(f'Transformation Error (HW): {ex}')
             return input_pose 
 
-    # --- STRICTLY HARDWARE-ONLY HACKS ---
-    def apply_ar4_hardware_pick_transform(self, pose: Pose):
-        current_x = -pose.orientation.z
-        current_y = -pose.orientation.w
-        pose.orientation.x = current_x 
-        pose.orientation.y = current_y
-        pose.orientation.z = 0.0
-        pose.orientation.w = 0.0
-        pose.position.z = 0.11
+    # --- STRICTLY SIMULATION-ONLY HACKS ---
+    def apply_ar4_sim_pick_transform(self, pose: Pose):
+        pose.position.z = 0.105 
+        dist_from_center = pose.position.y - 0.01
+        correction_factor = 0.033
+        pose.position.y -= (dist_from_center * correction_factor)
         return pose
 
-    def apply_ar4_hardware_place_transform(self, pose: Pose):
-        pose.orientation.x = pose.orientation.z
-        pose.orientation.y = pose.orientation.w
+    def apply_ar4_sim_place_transform(self, pose: Pose):
+        pose.position.z = 0.12
+        return pose
+
+    def apply_abb_sim_pick_transform(self, pose: Pose):
+        pose.position.x -= 0.004
+        pose.position.z = 0.21
+        dist_from_center = pose.position.y - 0.01
+        correction_factor = 0.033
+        pose.position.y -= (dist_from_center * correction_factor)
+        return pose
+
+    def apply_abb_sim_place_transform(self, pose: Pose):
+        pose.position.z = 0.22
+        return pose
+    
+    # --- STRICTLY HARDWARE-ONLY HACKS ---
+    def apply_ar4_hardware_pick_transform(self, pose: Pose):
+        # 1. Extract raw yaw and apply your observed 90-degree shift
+        yaw_deg = self._extract_yaw_safe(pose.orientation) + 90.0
+        
+        # 2. Use YOUR existing function to bind the wrist and prevent twisting
+        yaw_deg = self._normalize_symmetric_gripper_yaw(yaw_deg)
+        
+        # 3. Create the flat Z/W values
+        yaw_rad = math.radians(yaw_deg)
+        flat_z = math.sin(yaw_rad / 2.0)
+        flat_w = math.cos(yaw_rad / 2.0)
+        
+        # 4. Apply exactly like your old code
+        pose.orientation.x = -flat_z 
+        pose.orientation.y = -flat_w
         pose.orientation.z = 0.0
         pose.orientation.w = 0.0
         pose.position.z = 0.12
         return pose
 
+    def apply_ar4_hardware_place_transform(self, pose: Pose):
+        yaw_deg = self._extract_yaw_safe(pose.orientation) + 90.0
+        yaw_deg = self._normalize_symmetric_gripper_yaw(yaw_deg)
+        
+        yaw_rad = math.radians(yaw_deg)
+        flat_z = math.sin(yaw_rad / 2.0)
+        flat_w = math.cos(yaw_rad / 2.0)
+        
+        pose.orientation.x = flat_z
+        pose.orientation.y = flat_w
+        pose.orientation.z = 0.0
+        pose.orientation.w = 0.0
+        pose.position.z = 0.13
+        return pose
+
     def apply_abb_hardware_pick_transform(self, pose: Pose):
-        current_x = -pose.orientation.z
-        current_y = -pose.orientation.w
+        current_x = pose.orientation.z
+        current_y = pose.orientation.w
         pose.orientation.x = current_x
         pose.orientation.y = current_y
         pose.orientation.z = 0.0
@@ -426,9 +467,17 @@ class UnifiedAssemblySupervisor(Node):
             # 4. Normalize the angle between -180 and 180
             target_yaw_deg = self._normalize_symmetric_gripper_yaw(target_yaw_deg)
             
-            # 5. Build the final quaternion using the EXACT SAME method as the pick pose
-            target_quat = self._rpy_to_quat_normalized(0.0, 180.0, target_yaw_deg)
-            
+            if self.use_sim:
+                target_quat = self._rpy_to_quat_normalized(0.0, 180.0, target_yaw_deg)
+            else:
+                # Hardware needs the flat Z-rotation format so the hardware place_transforms can swizzle it
+                target_quat_array = R.from_euler('z', target_yaw_deg, degrees=True).as_quat()
+                target_quat = Quaternion()
+                target_quat.x = 0.0
+                target_quat.y = 0.0
+                target_quat.z = target_quat_array[2]
+                target_quat.w = target_quat_array[3]
+                
             return target_quat
             
         except ValueError as e:
@@ -447,6 +496,12 @@ class UnifiedAssemblySupervisor(Node):
     def is_handover_operation(self, brick):
         if brick.start_side == brick.target_side: return False
         if brick.start_side not in ["AR4", "ABB"] or brick.target_side not in ["AR4", "ABB"]: return False
+        
+        # --- NEW: ONLY HANDOVER Z-BRICKS ---
+        # If the brick type does not contain "Z", do not trigger a handover
+        if "Z" not in str(brick.type).upper(): 
+            return False
+            
         return True
 
     def stop_parallel_workers(self):
@@ -514,7 +569,7 @@ class UnifiedAssemblySupervisor(Node):
                 return None
 
             # Send goal
-            self.get_logger().debug(f'Sending action goal to server...')
+            self.get_logger().info(f'Sending action goal to server...')
             goal_future = client.send_goal_async(goal_msg)
             goal_handle = await goal_future
 
@@ -522,7 +577,7 @@ class UnifiedAssemblySupervisor(Node):
                 self.get_logger().error(f'Goal rejected by action server')
                 return None
 
-            self.get_logger().debug(f'Goal accepted by server, waiting for result...')
+            self.get_logger().info(f'Goal accepted by server, waiting for result...')
 
             # Track goal handle
             if client == self.ar4_client: 
@@ -547,7 +602,7 @@ class UnifiedAssemblySupervisor(Node):
 
             # Check result status
             if result.status == GoalStatus.STATUS_SUCCEEDED:
-                self.get_logger().debug(f'Goal succeeded')
+                self.get_logger().info(f'Goal succeeded')
                 return result.result
             else:
                 self.get_logger().error(f'Goal failed with status: {result.status}')
@@ -589,20 +644,15 @@ class UnifiedAssemblySupervisor(Node):
             self.get_logger().error(f'AR4 Grasp Pipeline failed: success={res.success}, emergency_stop={self.emergency_stop}, cancelled={self.ar4_cancelled}')
             return False
         # 1. Extract the raw 2D yaw from the camera's original grasp point
-        raw_yaw_deg = self._extract_yaw_safe(res.grasp_point.pose.orientation) # use brick.pose.orientation in DETECT
-        
-        if "Z" in brick.type.upper():
-            yolo_brick = next((b for b in self.detected_bricks if str(b.id) == str(brick.id)), None)
-            if yolo_brick:
-                # YOLO brick has +90 from DETECT. We subtract 90 to get the raw angle
-                raw_yaw_deg = self._extract_yaw_safe(yolo_brick.pose.orientation) - 90.0
+        if self.use_sim:       
+            raw_yaw_deg = self._extract_yaw_safe(res.grasp_point.pose.orientation) # use brick.pose.orientation in DETECT
 
-        # 2. Add 90 degrees to account for the swapped X/Y axes in transform_pose_to_abb
-        corrected_yaw_deg = raw_yaw_deg + 90.0
-        corrected_yaw_deg = self._normalize_symmetric_gripper_yaw(corrected_yaw_deg)
+            # 2. Add 90 degrees to account for the swapped X/Y axes in transform_pose_to_abb
+            corrected_yaw_deg = raw_yaw_deg + 90.0
+            corrected_yaw_deg = self._normalize_symmetric_gripper_yaw(corrected_yaw_deg)
 
-        # 3. Explicitly construct the hardware-safe quaternion (Roll=0, Pitch=180 points Z down, Yaw=Corrected)
-        res.grasp_point.pose.orientation = self._rpy_to_quat_normalized(0.0, 180.0, corrected_yaw_deg)
+            # 3. Explicitly construct the hardware-safe quaternion (Roll=0, Pitch=180 points Z down, Yaw=Corrected)
+            res.grasp_point.pose.orientation = self._rpy_to_quat_normalized(0.0, 180.0, corrected_yaw_deg)
         # Log initial grasp pose angle from grasping node
         initial_yaw = self._extract_yaw_safe(res.grasp_point.pose.orientation)
         self.get_logger().info(f'[AR4] 1. Initial grasp angle from node: {initial_yaw:.2f}°')
@@ -615,34 +665,22 @@ class UnifiedAssemblySupervisor(Node):
         
         place_pose = copy.deepcopy(brick.place_pose)
 
+        # 1. UNIVERSAL DELTA LOGIC (Applies to both Hardware and Sim)
+        place_pose.position = self.transform_position(place_pose, brick.pickup_pose, grasp_pose)
+        orientation = self.transform_quaternion(place_pose, brick.pickup_pose, grasp_pose)
+        
+        if orientation:
+            place_pose.orientation = orientation
+        else:
+            place_pose.orientation = copy.deepcopy(grasp_pose.orientation)
+
+        # 2. ROUTE TO ENVIRONMENT-SPECIFIC OFFSETS
         if not self.use_sim:
-            # Apply delta logic first!
-            place_pose.position = self.transform_position(place_pose, brick.pickup_pose, grasp_pose)
-            orientation = self.transform_quaternion(place_pose, brick.pickup_pose, grasp_pose)
-            if orientation:
-                place_pose.orientation.x = orientation.z
-                place_pose.orientation.y = orientation.w
-                place_pose.orientation.z = 0.0
-                place_pose.orientation.w = 0.0
-                
-            # Then apply hardware physical offsets
             grasp_pose = self.apply_ar4_hardware_pick_transform(grasp_pose)
             place_pose = self.apply_ar4_hardware_place_transform(place_pose)
         else:
-            place_pose.position = self.transform_position(place_pose, brick.pickup_pose, grasp_pose)
-            target_place_orientation = self.transform_quaternion(place_pose, brick.pickup_pose, grasp_pose)
-            grasp_pose.position.z = 0.105 
-            place_pose.position.z = 0.12
-
-            # Use the grasp orientation directly from the grasping module (no overrides)
-            grasp_orientation_yaw = self._extract_yaw_safe(grasp_pose.orientation)
-            self.get_logger().info(f'[AR4] 3. Final grasp orientation from module (no override): {grasp_orientation_yaw:.2f}°')
-
-            # Use computed orientation for consistency with delta logic
-            if target_place_orientation:
-                place_pose.orientation = target_place_orientation
-            else:
-                place_pose.orientation = copy.deepcopy(grasp_pose.orientation)
+            grasp_pose = self.apply_ar4_sim_pick_transform(grasp_pose)
+            place_pose = self.apply_ar4_sim_place_transform(place_pose)
 
         self.ar4_stage = "PICK"
         # Extract and log final pick angle
@@ -701,20 +739,15 @@ class UnifiedAssemblySupervisor(Node):
             self.get_logger().error(f"ABB Grasp Pipeline failed: success={res.success}, brick {brick.id}, stopped={self.emergency_stop}, cancelled={self.abb_cancelled}")
             return False
 
-                # 1. Extract the raw 2D yaw from the camera's original grasp point
-        raw_yaw_deg = self._extract_yaw_safe(res.grasp_point.pose.orientation) # use brick.pose.orientation in DETECT
-       
-        if "Z" in brick.type.upper():
-            yolo_brick = next((b for b in self.detected_bricks if str(b.id) == str(brick.id)), None)
-            if yolo_brick:
-                # YOLO brick has +90 from DETECT. We subtract 90 to get the raw angle
-                raw_yaw_deg = self._extract_yaw_safe(yolo_brick.pose.orientation) - 90.0
+        if self.use_sim: 
+            # 1. Extract the raw 2D yaw from the camera's original grasp point
+            raw_yaw_deg = self._extract_yaw_safe(res.grasp_point.pose.orientation) # use brick.pose.orientation in DETECT
 
-        # 2. prevents unnecessary 180-degree flips by normalizing the angle to the [-90, 90) range
-        corrected_yaw_deg = self._normalize_symmetric_gripper_yaw(raw_yaw_deg)
+            # 2. prevents unnecessary 180-degree flips by normalizing the angle to the [-90, 90) range
+            corrected_yaw_deg = self._normalize_symmetric_gripper_yaw(raw_yaw_deg)
 
-        # 3. Explicitly construct the hardware-safe quaternion (Roll=0, Pitch=180 points Z down, Yaw=Corrected)
-        res.grasp_point.pose.orientation = self._rpy_to_quat_normalized(0.0, 180.0, corrected_yaw_deg)
+            # 3. Explicitly construct the hardware-safe quaternion (Roll=0, Pitch=180 points Z down, Yaw=Corrected)
+            res.grasp_point.pose.orientation = self._rpy_to_quat_normalized(0.0, 180.0, corrected_yaw_deg)
 
         # Log initial grasp pose angle from grasping node
         initial_yaw = self._extract_yaw_safe(res.grasp_point.pose.orientation)
@@ -729,34 +762,22 @@ class UnifiedAssemblySupervisor(Node):
         
         place_pose = copy.deepcopy(brick.place_pose)
 
+        # 1. UNIVERSAL DELTA LOGIC (Applies to both Hardware and Sim)
+        place_pose.position = self.transform_position(place_pose, brick.pickup_pose, grasp_pose)
+        orientation = self.transform_quaternion(place_pose, brick.pickup_pose, grasp_pose)
+        
+        if orientation:
+            place_pose.orientation = orientation
+        else:
+            place_pose.orientation = copy.deepcopy(grasp_pose.orientation)
+
+        # 2. ROUTE TO ENVIRONMENT-SPECIFIC OFFSETS
         if not self.use_sim:
-            # Apply delta logic
-            place_pose.position = self.transform_position(place_pose, brick.pickup_pose, grasp_pose)
-            orientation = self.transform_quaternion(place_pose, brick.pickup_pose, grasp_pose)
-            if orientation:
-                place_pose.orientation.x = orientation.z
-                place_pose.orientation.y = orientation.w
-                place_pose.orientation.z = 0.0
-                place_pose.orientation.w = 0.0
-                
             grasp_pose = self.apply_abb_hardware_pick_transform(grasp_pose)
             place_pose = self.apply_abb_hardware_place_transform(place_pose)
         else:
-            grasp_pose.position.x -= 0.004
-            place_pose.position = self.transform_position(place_pose, brick.pickup_pose, grasp_pose)
-            target_place_orientation = self.transform_quaternion(place_pose, brick.pickup_pose, grasp_pose)
-            grasp_pose.position.z = 0.21
-            place_pose.position.z = 0.22
-
-            # Use the grasp orientation directly from the grasping module (no overrides)
-            grasp_orientation_yaw = self._extract_yaw_safe(grasp_pose.orientation)
-            self.get_logger().info(f'[ABB] 3. Final grasp orientation from module (no override): {grasp_orientation_yaw:.2f}°')
-
-            # Use computed orientation for consistency with delta logic
-            if target_place_orientation:
-                place_pose.orientation = target_place_orientation
-            else:
-                place_pose.orientation = copy.deepcopy(grasp_pose.orientation)
+            grasp_pose = self.apply_abb_sim_pick_transform(grasp_pose)
+            place_pose = self.apply_abb_sim_place_transform(place_pose)
 
         self.abb_stage = "PICK"
         # Extract and log final pick angle
@@ -844,10 +865,7 @@ class UnifiedAssemblySupervisor(Node):
                 place_pose.position = self.transform_position(place_pose, brick.pickup_pose, grasp_pose)
                 orientation = self.transform_quaternion(place_pose, brick.pickup_pose, grasp_pose)
                 if orientation:
-                    place_pose.orientation.x = orientation.z
-                    place_pose.orientation.y = orientation.w
-                    place_pose.orientation.z = 0.0
-                    place_pose.orientation.w = 0.0
+                        place_pose.orientation = copy.deepcopy(orientation)
                 place_pose = self.apply_ar4_hardware_place_transform(place_pose)
             else:
                 place_pose.position.z = 0.12
@@ -909,10 +927,7 @@ class UnifiedAssemblySupervisor(Node):
                 place_pose.position = self.transform_position(place_pose, brick.pickup_pose, grasp_pose)
                 orientation = self.transform_quaternion(place_pose, brick.pickup_pose, grasp_pose)
                 if orientation:
-                    place_pose.orientation.x = orientation.z
-                    place_pose.orientation.y = orientation.w
-                    place_pose.orientation.z = 0.0
-                    place_pose.orientation.w = 0.0
+                        place_pose.orientation = copy.deepcopy(orientation)
                 place_pose = self.apply_abb_hardware_place_transform(place_pose)
             else:
                 place_pose.position.z = 0.22
@@ -988,6 +1003,7 @@ class UnifiedAssemblySupervisor(Node):
 
                 req = DetectBricks.Request()
                 result = await self.camera_client.call_async(req)
+                
                 for brick in result.bricks:
                     # 1. Extract raw yaw
                     raw_yaw_deg = self._extract_yaw_safe(brick.pose.orientation)
@@ -1058,20 +1074,20 @@ class UnifiedAssemblySupervisor(Node):
                     # 1. Extract raw 2D yaw from the grasping node
                     raw_yaw_deg = self._extract_yaw_safe(grasp_result.grasp_point.pose.orientation)
                     
+                    yolo_brick = None
+
                     if "Z" in self.current_brick.type.upper():
                         yolo_brick = next((b for b in self.detected_bricks if str(b.id) == str(self.current_brick.id)), None)
-                        if yolo_brick:
-                            raw_yaw_deg = self._extract_yaw_safe(yolo_brick.pose.orientation) - 90.0
-                            
-                    # 2. Add 90 degrees
+                        
+                    # 2. Add 90 degrees and NORMALIZE to prevent spin on the table
                     corrected_yaw_deg = raw_yaw_deg + 90.0
+                    corrected_yaw_deg = self._normalize_symmetric_gripper_yaw(corrected_yaw_deg)
                     
-                    # 3. Explicitly construct the hardware-safe quaternion
+                    # 3. Apply the stable pick orientation
                     grasp_result.grasp_point.pose.orientation = self._rpy_to_quat_normalized(0.0, 180.0, corrected_yaw_deg)
                     
                     self.current_grasp_point = grasp_result.grasp_point
                     
-                    self.current_grasp_point = grasp_result.grasp_point
                     if self.is_handover_operation(self.current_brick):
                         self.get_logger().info(f'🔄 HANDOVER detected: {self.current_brick.start_side} → {self.current_brick.target_side}')
                         self.operation_type = "HANDOVER"
@@ -1079,8 +1095,47 @@ class UnifiedAssemblySupervisor(Node):
                         self.handover_pose = Pose()
                         self.handover_pose.position.x = 0.56
                         self.handover_pose.position.y = 0.1
-                        self.handover_pose.orientation = Quaternion(x=0.707, y=0.707, z=0.0, w=0.0)
                         
+                        # --- Z-BRICK HANDOVER PRESENTATION LOGIC ---
+                        # Default to preserving the exact wrist angle from the pick
+                        handover_yaw_deg = corrected_yaw_deg
+                        
+                        if "Z" in self.current_brick.type.upper() and yolo_brick:
+                            abb_grasp = self.transform_pose_to_abb(grasp_result.grasp_point.pose)
+                            if abb_grasp:
+                                # ==========================================
+                                # --- ADD THESE DEBUG LOGS TO VERIFY ---
+                                # ==========================================
+                                self.get_logger().info(f"[DEBUG-Z] AI Grasp (Camera Frame): X={grasp_result.grasp_point.pose.position.x:.3f}, Y={grasp_result.grasp_point.pose.position.y:.3f}")
+                                self.get_logger().info(f"[DEBUG-Z] AI Grasp (ABB Frame)   : X={abb_grasp.position.x:.3f}, Y={abb_grasp.position.y:.3f}")
+                                self.get_logger().info(f"[DEBUG-Z] YOLO Center (ABB Frame): X={yolo_brick.pose.position.x:.3f}, Y={yolo_brick.pose.position.y:.3f}")
+                                
+                                # Calculate differences
+                                dx = abb_grasp.position.x - yolo_brick.pose.position.x
+                                dy = abb_grasp.position.y - yolo_brick.pose.position.y
+                                
+                                dominant_axis = 'X' if abs(dx) > abs(dy) else 'Y'
+                                self.get_logger().info(f"[DEBUG-Z] Delta Check: dx={dx:.3f}, dy={dy:.3f} | Dominant axis: {dominant_axis}")
+                                # ==========================================
+                                
+                                # Check which axis has the dominant offset
+                                if abs(dx) > abs(dy):
+                                    if dx > 0:
+                                        # X grasp > X center -> rotate 90 degrees CCW
+                                        handover_yaw_deg += 90.0
+                                    else:
+                                        # X grasp < X center -> rotate 90 degrees CW
+                                        handover_yaw_deg -= 90.0
+                                else:
+                                    if dy < 0:
+                                        # Y grasp > Y center -> rotate 180 degrees
+                                        handover_yaw_deg += 180.0
+                                    else:
+                                        # Y grasp < Y center -> don't rotate (0 degrees)
+                                        pass
+                                    
+                        # Apply the final presentation angle to the handover target
+                        self.handover_pose.orientation = self._rpy_to_quat_normalized(0.0, 180.0, handover_yaw_deg)
                         
                         if self.current_brick.start_side == "AR4":
                             self.handover_pose.position.z = self.handover_meeting_height + self.ar4_z_offset
@@ -1159,13 +1214,19 @@ class UnifiedAssemblySupervisor(Node):
                     if not self.use_sim: 
                         grasp_pose = self.apply_ar4_hardware_pick_transform(grasp_pose)
                     else:
-                        grasp_pose.position.z = 0.105               
+                        grasp_pose.position.z = 0.105 
+                        dist_from_center = grasp_pose.position.y - 0.01
+                        grasp_pose.position.y -= (dist_from_center * 0.033)     
+                        self.get_logger().info(f'[SIM] Applied Y-axis correction of {(dist_from_center*0.033):.3f}m to AR4 grasp pose based on distance from camera center')         
                 else:
                     self.abb_stage = "PICK"
                     if not self.use_sim: 
                         grasp_pose = self.apply_abb_hardware_pick_transform(grasp_pose)
                     else:
                         grasp_pose.position.z = 0.21
+                        dist_from_center = grasp_pose.position.y - 0.01
+                        grasp_pose.position.y -= (dist_from_center * 0.033)
+                        self.get_logger().info(f'[SIM] Applied Y-axis correction of {(dist_from_center*0.033):.3f}m to ABB grasp pose based on distance from camera center')
 
                 pick_goal = ExecuteTask.Goal(task_type="PICK", target_pose=grasp_pose)
                 result = await self.send_action_goal(client, pick_goal)
@@ -1195,19 +1256,49 @@ class UnifiedAssemblySupervisor(Node):
                 
                 if grasp_result.success:
                     grasp_for_receiver = grasp_result.grasp_point
+                    
+                    # =========================================================
+                    # 1. MAKE IT EXACTLY LIKE A NORMAL GRASP
+                    # =========================================================
+                    if self.use_sim:
+                        raw_yaw_deg = self._extract_yaw_safe(grasp_for_receiver.pose.orientation)
+                        
+                        # (Use YOLO's perfect line angle if Z or I brick)
+                        if self.current_brick.type.upper() in ["Z_SHAPE", "I_SHAPE"]:
+                            clean_id = str(self.current_brick.id).replace("brick_", "")
+                            yolo_brick = next((b for b in self.detected_bricks if str(b.id) == clean_id), None)
+                            if yolo_brick:
+                                raw_yaw_deg = self._extract_yaw_safe(yolo_brick.pose.orientation) 
+
+                        corrected_yaw_deg = self._normalize_symmetric_gripper_yaw(raw_yaw_deg + 90.0)
+                        grasp_for_receiver.pose.orientation = self._rpy_to_quat_normalized(0.0, 180.0, corrected_yaw_deg)
+                    # =========================================================
+                    # 2. TRANSFORM TO PHYSICAL FRAME
+                    # =========================================================
+                    z_target=0.656
+                    scale_factor = z_target / 0.723
+                    grasp_for_receiver.pose.position.x *= scale_factor
+                    grasp_for_receiver.pose.position.y *= scale_factor
+                    grasp_for_receiver.pose.position.z *= scale_factor
                     transformed_receiver_grasp = self.transform_pose_to_abb(grasp_for_receiver.pose)
                     
-                    # FORCE MID-AIR Z-HEIGHT MATCH
-                    if self.current_brick.start_side == "AR4":
-                        transformed_receiver_grasp.position.z = self.handover_meeting_height + self.abb_z_offset
-
-                    if self.current_brick.start_side == "ABB":
-                        transformed_receiver_grasp.position.z = self.handover_meeting_height + self.ar4_z_offset
-                    
+                    # =========================================================
+                    # 3. APPLY HARDWARE OFFSETS
+                    # =========================================================
                     if receiving_arm == "AR4" and not self.use_sim:
                         transformed_receiver_grasp = self.apply_ar4_hardware_pick_transform(transformed_receiver_grasp)
                     elif receiving_arm == "ABB" and not self.use_sim:
                         transformed_receiver_grasp = self.apply_abb_hardware_pick_transform(transformed_receiver_grasp)
+
+                    # =========================================================
+                    # 4. OVERRIDE Z-HEIGHT FOR MID-AIR HANDOVER
+                    # =========================================================
+                    # The hardware transforms force Z to table level (0.11 or 0.21).
+                    # We MUST pull it back up so they safely meet in the air!
+                    if self.current_brick.start_side == "AR4":
+                        transformed_receiver_grasp.position.z = self.handover_meeting_height + self.abb_z_offset
+                    if self.current_brick.start_side == "ABB":
+                        transformed_receiver_grasp.position.z = self.handover_meeting_height + self.ar4_z_offset
 
                     self.abb_grasp_point_for_handover = grasp_for_receiver
                     self.abb_grasp_point_for_handover.pose = transformed_receiver_grasp
@@ -1257,10 +1348,7 @@ class UnifiedAssemblySupervisor(Node):
                     place_pose.position = self.transform_position(place_pose, self.current_brick.pickup_pose, self.abb_grasp_point_for_handover.pose)
                     orientation = self.transform_quaternion(place_pose, self.current_brick.pickup_pose, self.abb_grasp_point_for_handover.pose)
                     if orientation:
-                        place_pose.orientation.x = orientation.z
-                        place_pose.orientation.y = orientation.w
-                        place_pose.orientation.z = 0.0
-                        place_pose.orientation.w = 0.0
+                        place_pose.orientation = copy.deepcopy(orientation)
                         
                     if is_ar4_placing:
                         place_pose = self.apply_ar4_hardware_place_transform(place_pose)
