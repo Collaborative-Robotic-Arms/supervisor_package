@@ -42,7 +42,7 @@ class UnifiedAssemblySupervisor(Node):
         self.cb_group = ReentrantCallbackGroup()
         
         # Parameters
-        self.declare_parameter('use_sim', True)
+        self.declare_parameter('use_sim', False)
         self.declare_parameter('enable_mtc_mode', True)
         self.declare_parameter('handover_trigger_distance', 0.3)
         
@@ -114,7 +114,7 @@ class UnifiedAssemblySupervisor(Node):
         self.plan_check_timer = None
         self.check_for_new_plans = True
         self.last_plan_count = 0
-        self.handover_meeting_height = 0.127
+        self.handover_meeting_height = 0.13
         self.ar4_z_offset = 0.043
         self.abb_z_offset = 0.136
 
