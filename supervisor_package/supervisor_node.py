@@ -121,8 +121,7 @@ class UnifiedAssemblySupervisor(Node):
         mode_str = "SIMULATION (1:1 Pass-through)" if self.use_sim else "HARDWARE (Physical Offsets)"
         self.get_logger().info(f'Unified Assembly Supervisor Initialized in {mode_str} mode')
         
-        # self.timer = self.create_timer(1.0, self.state_machine_loop, callback_group=self.cb_group)
-        self.timer = self.create_timer(0.1, self.state_machine_loop, callback_group=self.cb_group)
+        self.timer = self.create_timer(1.0, self.state_machine_loop, callback_group=self.cb_group)
         self.plan_check_timer = self.create_timer(5.0, self.poll_for_new_plans, callback_group=self.cb_group)
 
     # ========================================================================
@@ -331,7 +330,7 @@ class UnifiedAssemblySupervisor(Node):
             
         try:
             transformed_pose = Pose()
-            transformed_pose.position.x = input_pose.position.y + 0.68
+            transformed_pose.position.x = input_pose.position.y + 0.69
             transformed_pose.position.y = input_pose.position.x + 0.043
             transformed_pose.position.z = input_pose.position.z
             transformed_pose.orientation = input_pose.orientation
@@ -382,7 +381,7 @@ class UnifiedAssemblySupervisor(Node):
         pose.orientation.y = -flat_w
         pose.orientation.z = 0.0
         pose.orientation.w = 0.0
-        pose.position.z = 0.12
+        pose.position.z = 0.11
         return pose
 
     def apply_ar4_hardware_place_transform(self, pose: Pose):
@@ -401,25 +400,40 @@ class UnifiedAssemblySupervisor(Node):
         return pose
 
     def apply_abb_hardware_pick_transform(self, pose: Pose):
-        current_x = pose.orientation.z
-        current_y = pose.orientation.w
-        pose.orientation.x = current_x
-        pose.orientation.y = current_y
+        # 1. Extract raw yaw
+        yaw_deg = self._extract_yaw_safe(pose.orientation)
+        
+        # 2. Normalize to [-90, 90) to prevent the 360-degree wrist twist
+        yaw_deg = self._normalize_symmetric_gripper_yaw(yaw_deg)
+        
+        # 3. Create flat Z/W values
+        yaw_rad = math.radians(yaw_deg)
+        flat_z = math.sin(yaw_rad / 2.0)
+        flat_w = math.cos(yaw_rad / 2.0)
+        
+        # 4. Apply the ABB-specific swizzle
+        pose.orientation.x = flat_z
+        pose.orientation.y = flat_w
         pose.orientation.z = 0.0
         pose.orientation.w = 0.0
         pose.position.z = 0.21
         return pose
 
     def apply_abb_hardware_place_transform(self, pose: Pose):
-        current_x = -pose.orientation.z
-        current_y = -pose.orientation.w
-        pose.orientation.x = current_x
-        pose.orientation.y = current_y
+        yaw_deg = self._extract_yaw_safe(pose.orientation)
+        yaw_deg = self._normalize_symmetric_gripper_yaw(yaw_deg)
+        
+        yaw_rad = math.radians(yaw_deg)
+        flat_z = math.sin(yaw_rad / 2.0)
+        flat_w = math.cos(yaw_rad / 2.0)
+        
+        # Notice the negative signs from your original place transform
+        pose.orientation.x = -flat_z
+        pose.orientation.y = -flat_w
         pose.orientation.z = 0.0
         pose.orientation.w = 0.0
         pose.position.z = 0.24
         return pose
-
     # ========================================================================
     # DELTA LOGIC (Rigid Body Match for Hardware)
     # ========================================================================
@@ -451,27 +465,43 @@ class UnifiedAssemblySupervisor(Node):
         return Pose().position.__class__(x=target_x, y=target_y, z=target_z)
     
     def transform_quaternion(self, place_pose, brick_pose, grasp_pose):
+        """
+        Calculate the target end-effector orientation for brick placement.
+        
+        Constraint: Gripper ALWAYS points downward (pitch=180°).
+        Variable: ONLY yaw (Z-axis rotation) changes based on brick orientation.
+        
+        This ensures consistent gripper approach from above while adapting 
+        to the required brick rotation around the vertical axis.
+        """
         if any(p is None for p in [place_pose, brick_pose, grasp_pose]):
             return None
         try:
-            # 1. Safely extract all three yaw angles
-            r_place = self._extract_yaw_safe(place_pose.orientation)
-            r_brick = self._extract_yaw_safe(brick_pose.orientation)
-            r_grasp = self._extract_yaw_safe(grasp_pose.orientation)
+            # 1. Extract ONLY the yaw (Z-rotation) from all three poses
+            # This ensures we ignore any pitch/roll components and focus purely on vertical-axis rotation
+            yaw_place = self._extract_yaw_safe(place_pose.orientation)
+            yaw_brick = self._extract_yaw_safe(brick_pose.orientation)
+            yaw_grasp = self._extract_yaw_safe(grasp_pose.orientation)
             
-            # 2. Calculate the required final yaw 
-            target_yaw_deg = r_grasp + (r_place - r_brick)
+            # DEBUG: Log all three yaw angles
+            self.get_logger().info(f'[DEBUG TRANSFORM] Yaw values - place={yaw_place:.2f}° | brick={yaw_brick:.2f}° | grasp={yaw_grasp:.2f}°')
             
-            # 3. Snap to the nearest 90 degree increment
-            target_yaw_deg = round(target_yaw_deg / 90.0) * 90.0
-
-            # 4. Normalize the angle between -180 and 180
+            # 2. Calculate the required target yaw (Z-axis rotation only)
+            # Formula: target_yaw = grasp_yaw + (desired_placement_yaw - detected_brick_yaw)
+            target_yaw_deg = yaw_grasp + (yaw_place - yaw_brick)
+            self.get_logger().info(f'[DEBUG TRANSFORM] Target Yaw: {yaw_grasp:.2f}° + ({yaw_place:.2f}° - {yaw_brick:.2f}°) = {target_yaw_deg:.2f}°')
+            
+            # OLD CODE (commented out - was forcing snapping to 90-degree increments):
+            # target_yaw_deg = round(target_yaw_deg / 90.0) * 90.0
+            
+            # 3. Normalize the yaw angle between -180 and 180
             target_yaw_deg = self._normalize_symmetric_gripper_yaw(target_yaw_deg)
             
+            # 4. Create quaternion: Always gripper-down (pitch=180°), only yaw varies
             if self.use_sim:
                 target_quat = self._rpy_to_quat_normalized(0.0, 180.0, target_yaw_deg)
             else:
-                # Hardware needs the flat Z-rotation format so the hardware place_transforms can swizzle it
+                # Hardware mode: Create pure Z-rotation with fixed gripper-down orientation
                 target_quat_array = R.from_euler('z', target_yaw_deg, degrees=True).as_quat()
                 target_quat = Quaternion()
                 target_quat.x = 0.0
@@ -542,19 +572,26 @@ class UnifiedAssemblySupervisor(Node):
             req = GetAssemblyPlan.Request()
             result = await self.gui_client.call_async(req)
             
-            if result is not None and len(result.plan) > 0:
-                # --- REMOVED THE FLAWED LENGTH CHECK ---
-                
-                # Check permanent memory for new, unseen bricks
-                new_bricks = [b for b in result.plan if b.id not in self.known_brick_ids]
-                
-                if new_bricks:
-                    for b in new_bricks:
-                        self.known_brick_ids.add(b.id) # Mark as seen!
-                        
-                    self.assembly_queue.extend(new_bricks)
-                    if self.state == "WAIT_FOR_NEW_PLAN" or self.state == "DONE":
-                        self.state = "DETECT"
+            if result is not None:
+                if result.success and len(result.plan) > 0:
+                    # Check permanent memory for new, unseen bricks
+                    new_bricks = [b for b in result.plan if b.id not in self.known_brick_ids]
+                    
+                    if new_bricks:
+                        for b in new_bricks:
+                            self.known_brick_ids.add(b.id) # Mark as seen!
+                            
+                        self.assembly_queue.extend(new_bricks)
+                        if self.state in ["WAIT_FOR_NEW_PLAN", "DONE", "INIT"]:
+                            self.state = "DETECT"
+                            
+                elif not result.success:
+                    # The allocator temporarily returns success=False when a new GUI plan 
+                    # arrives and resets the pipeline. We use this signal to wipe the supervisor's memory!
+                    if self.state in ["WAIT_FOR_NEW_PLAN", "DONE"] and not self.assembly_queue:
+                        if len(self.known_brick_ids) > 0:
+                            self.get_logger().info("New GUI sequence detected. Clearing previously known Brick IDs.")
+                            self.known_brick_ids.clear()
         except Exception:
             pass
 
@@ -980,7 +1017,7 @@ class UnifiedAssemblySupervisor(Node):
         
         self._is_looping = True
 
-        # self.timer.cancel()
+        self.timer.cancel()
         try:
             if self.state == "INIT":
                 if not self.gui_client.wait_for_service(timeout_sec=1.0):
@@ -994,8 +1031,7 @@ class UnifiedAssemblySupervisor(Node):
                     self.known_brick_ids = {b.id for b in result.plan}
                     self.state = "DETECT"
                 else:
-                    await self.ros_sleep(2.0)
-                    # self.timer = self.create_timer(2.0, self.state_machine_loop, callback_group=self.cb_group)
+                    self.timer = self.create_timer(2.0, self.state_machine_loop, callback_group=self.cb_group)
                     return
 
             elif self.state == "DETECT":
