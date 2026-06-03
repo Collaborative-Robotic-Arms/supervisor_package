@@ -28,6 +28,11 @@ install(DIRECTORY
   DESTINATION share/${PROJECT_NAME}
 )
 
+install(PROGRAMS
+  supervisor_package/sequence_runner.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME sequence_runner)
+
 
 # Install the main supervisor
 install(PROGRAMS
