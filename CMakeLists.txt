@@ -94,6 +94,31 @@ install(PROGRAMS
   DESTINATION lib/${PROJECT_NAME}
   RENAME mock_grasping_node)
 
+  install(PROGRAMS
+  supervisor_package/live_separation_plotter.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME live_separation_plotter)
+
+  install(PROGRAMS
+  supervisor_package/live_utilization_plotter.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME live_utilization_plotter)
+
+  install(PROGRAMS
+  supervisor_package/live_zone_gantt_plotter.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME live_zone_gantt_plotter)
+
+  install(PROGRAMS
+  supervisor_package/execution_data_logger.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME execution_data_logger)
+  
+  install(PROGRAMS
+  supervisor_package/master_data_logger.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME master_data_logger)
+
 # 4. Export and Package
 ament_export_dependencies(rosidl_default_runtime)
 ament_export_dependencies(tf2_ros tf2_geometry_msgs)
