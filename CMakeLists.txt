@@ -33,6 +33,10 @@ install(PROGRAMS
   DESTINATION lib/${PROJECT_NAME}
   RENAME sequence_runner)
 
+  install(PROGRAMS
+  supervisor_package/pick_place_sequence_runner.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME pick_place_sequence_runner)
 
 # Install the main supervisor
 install(PROGRAMS
