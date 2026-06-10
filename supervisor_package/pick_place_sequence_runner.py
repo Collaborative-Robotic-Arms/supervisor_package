@@ -178,13 +178,19 @@ class SequenceRunner(Node):
 
     async def ar4_workflow(self):
         """Complete independent sequence for the AR4 arm."""
-        ar4_pick_pose = make_pose(0.75, -0.22, 0.14, 0.707, 0.707, 0.0, 0.0)
-        ar4_place_pose = make_pose(0.623, 0.06, 0.23, 0.707, 0.707, 0.0, 0.0)
+        ar4_pick_pose = make_pose(0.79, 0.1, 0.115, 0.707, 0.707, 0.0, 0.0)
+        ar4_place_pose = make_pose(0.725, 0.016, 0.135, -1.0, 0.0, 0.0, 0.0)
+        ar4_pick_pose_2 = make_pose(0.78, -0.1, 0.115, 0.707, 0.707, 0.0, 0.0)
+        ar4_place_pose_2 = make_pose(0.677, 0.017, 0.155, 0.707, 0.707, 0.0, 0.0)
         
         if not await self.send_task(self.ar4_client, 'ar4_control', 'PICK', ar4_pick_pose): return False
         if not await self.send_task(self.ar4_client, 'ar4_control', 'PLACE', ar4_place_pose): return False
+        self.get_logger().info("AR4 finished first PLACE. Starting second pick/place...")
+
+        if not await self.send_task(self.ar4_client, 'ar4_control', 'PICK', ar4_pick_pose_2): return False
+        if not await self.send_task(self.ar4_client, 'ar4_control', 'PLACE', ar4_place_pose_2): return False
         
-        self.get_logger().info("AR4 finished PLACE. Returning HOME...")
+        self.get_logger().info("AR4 finished second PLACE. Returning HOME...")
         if not await self.send_task(self.ar4_client, 'ar4_control', 'HOME', None): return False
         
         self.get_logger().info("✅ AR4 Workflow Complete!")
@@ -192,13 +198,19 @@ class SequenceRunner(Node):
 
     async def abb_workflow(self):
         """Complete independent sequence for the ABB arm."""
-        abb_pick_pose = make_pose(0.35, 0.0, 0.32, 0.0, 1.0, 0.0, 0.0)
-        abb_place_pose = make_pose(0.4, 0.0, 0.22, 0.0, 1.0, 0.0, 0.0)
+        abb_pick_pose = make_pose(0.47, 0.1, 0.21, 0.0, 1.0, 0.0, 0.0)
+        abb_place_pose = make_pose(0.558, 0.0495, 0.23, 0.0, 1.0, 0.0, 0.0)
+        abb_pick_pose_2 = make_pose(0.447, -0.1, 0.21, 0.707, 0.707, 0.0, 0.0)
+        abb_place_pose_2 = make_pose(0.552, 0.0795, 0.25, -1.0, 0.0, 0.0, 0.0)
         
         if not await self.send_task(self.abb_client, 'abb_control', 'PICK', abb_pick_pose): return False
         if not await self.send_task(self.abb_client, 'abb_control', 'PLACE', abb_place_pose): return False
+        self.get_logger().info("ABB finished first PLACE. Starting second pick/place...")
+
+        if not await self.send_task(self.abb_client, 'abb_control', 'PICK', abb_pick_pose_2): return False
+        if not await self.send_task(self.abb_client, 'abb_control', 'PLACE', abb_place_pose_2): return False
         
-        self.get_logger().info("ABB finished PLACE. Returning HOME...")
+        self.get_logger().info("ABB finished second PLACE. Returning HOME...")
         if not await self.send_task(self.abb_client, 'abb_control', 'HOME', None): return False
         
         self.get_logger().info("✅ ABB Workflow Complete!")

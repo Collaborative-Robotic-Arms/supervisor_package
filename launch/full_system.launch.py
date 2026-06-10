@@ -65,14 +65,14 @@ def launch_setup(context, *args, **kwargs):
     # ---------------------------------------------------------
     # 3. HARDWARE-ONLY NODES
     # ---------------------------------------------------------
-    if not is_sim:
-        nodes_to_start.append(Node(
-            package='ar4_highlevel_bridge',
-            executable='gripper.py',
-            name='ar4_gripper_server',
-            output='screen',
-            parameters=[{"use_sim_time": is_sim}]
-        ))
+    # if not is_sim:
+    #     nodes_to_start.append(Node(
+    #         package='ar4_highlevel_bridge',
+    #         executable='gripper.py',
+    #         name='ar4_gripper_server',
+    #         output='screen',
+    #         parameters=[{"use_sim_time": is_sim}]
+    #     ))
 
     # ---------------------------------------------------------
     # 4. SIMULATION-ONLY NODES (The Mock Pipeline)

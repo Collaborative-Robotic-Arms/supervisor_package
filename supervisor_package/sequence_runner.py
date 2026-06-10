@@ -109,7 +109,7 @@ class SequenceRunner(Node):
         # 1. PICK  (AR4)  -- PLACEHOLDER POSE: fill in x, y, z + orientation
         # ------------------------------------------------------------------
         pick_pose = make_pose(
-            0.75, -0.22, 0.14,      # TODO: x, y, z
+            0.75, -0.2, 0.115,      # TODO: x, y, z
             0.707, 0.707, 0.0, 0.0  # TODO: orientation (qx, qy, qz, qw)
         )
         if not self.send_task(self.ar4_client, 'ar4_control', 'PICK', pick_pose):
@@ -118,14 +118,15 @@ class SequenceRunner(Node):
         # ------------------------------------------------------------------
         # 2. INTERMEDIATE_GIVE  (AR4)
         # ------------------------------------------------------------------
-        give_pose = make_pose(0.623, 0.06, 0.23, 0.707, 0.707, 0.0, 0.0)
+        give_pose = make_pose(0.6, 0.1, 0.23, 0.707, 0.707, 0.0, 0.0)
         if not self.send_task(self.ar4_client, 'ar4_control', 'INTERMEDIATE_GIVE', give_pose):
             return False
+
 
         # ------------------------------------------------------------------
         # 3. INTERMEDIATE_TAKE  (ABB)
         # ------------------------------------------------------------------
-        take_pose = make_pose(0.55, 0.0, 0.32, 0.0, 1.0, 0.0, 0.0)
+        take_pose = make_pose(0.54, -0.034, 0.3, 0.0, 1.0, 0.0, 0.0)
         if not self.send_task(self.abb_client, 'abb_control', 'INTERMEDIATE_TAKE', take_pose):
             return False
 
@@ -135,11 +136,14 @@ class SequenceRunner(Node):
         if not self.send_task(self.ar4_client, 'ar4_control', 'RELEASE'):
             return False
 
+        if not self.send_task(self.ar4_client, 'ar4_control', 'HOME'):
+            return False
+        
         # ------------------------------------------------------------------
         # 5. PLACE  (ABB)  -- PLACEHOLDER POSE: fill in x, y, z + orientation
         # ------------------------------------------------------------------
         place_pose = make_pose(
-            0.4, 0.0, 0.22,      # TODO: x, y, z
+            0.52, -0.013, 0.23,      # TODO: x, y, z
             0.0, 1.0, 0.0, 0.0  # TODO: orientation (qx, qy, qz, qw)
         )
         if not self.send_task(self.abb_client, 'abb_control', 'PLACE', place_pose):
